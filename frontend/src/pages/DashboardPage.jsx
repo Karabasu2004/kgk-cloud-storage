@@ -73,7 +73,7 @@ function DashboardPage({ session, onLogout }) {
   const [renameFolderId, setRenameFolderId] = useState('');
   const [renameFolderName, setRenameFolderName] = useState('');
 
-  const loadFiles = async () => {
+  const loadFiles = async ({ preserveError = false } = {}) => {
     if (!session?.token) return;
 
     const fileParams = {};
@@ -112,9 +112,13 @@ function DashboardPage({ session, onLogout }) {
       });
       setFolders(foldersResult.folders || []);
       setSharedFiles(sharedResult.shares || []);
-      setErrorMessage('');
+      if (!preserveError) {
+        setErrorMessage('');
+      }
     } catch (error) {
-      setErrorMessage(error.message || 'Unable to load files.');
+      if (!preserveError) {
+        setErrorMessage(error.message || 'Unable to load files.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -137,10 +141,10 @@ function DashboardPage({ session, onLogout }) {
   }, [files]);
 
   const stats = useMemo(() => ([
-    { label: 'Files', value: `${storageQuota.fileCount}/${storageQuota.maxFiles}`, color: 'blue' },
-    { label: 'Folders', value: String(folders.length), color: 'green' },
-    { label: 'Storage Used', value: `${formatBytes(storageQuota.usedStorageBytes)} / ${formatBytes(storageQuota.maxStorageBytes)}`, color: 'orange' },
-    { label: 'Shared', value: String(sharedFiles.length), color: 'purple' },
+    { label: 'Files stored', value: `${storageQuota.fileCount}/${storageQuota.maxFiles}`, icon: '▣', color: 'blue' },
+    { label: 'Folders', value: String(folders.length), icon: '▰', color: 'cyan' },
+    { label: 'Storage used', value: formatBytes(storageQuota.usedStorageBytes), icon: '◉', color: 'orange' },
+    { label: 'Shared files', value: String(sharedFiles.length), icon: '↗', color: 'purple' },
   ]), [storageQuota, folders.length, sharedFiles.length]);
 
   const storageUsagePercent = storageQuota.maxStorageBytes > 0
@@ -239,8 +243,12 @@ function DashboardPage({ session, onLogout }) {
           // Confirmation may already have completed, or the pending reservation may already be removed.
         }
       }
+      // A rejected upload is not a successful upload: clear the stale
+      // "Uploading file..." notice, refresh quota/file data without clearing
+      // the upload error, then keep the rejection visible to the user.
+      setNoticeMessage('');
+      await loadFiles({ preserveError: true });
       setErrorMessage(error.message ? `Upload failed: ${error.message}` : 'Upload failed. Please try again.');
-      await loadFiles();
     } finally {
       uploadInProgressRef.current = false;
       setIsUploading(false);
@@ -502,35 +510,45 @@ function DashboardPage({ session, onLogout }) {
   };
 
   const renderDashboardView = () => (
-    <>
+    <div className="dashboard-overview">
       <section className="welcome-row">
-        <div>
-          <p className="eyebrow accent">Overview</p>
-          <h2>Welcome back, {userName}</h2>
+        <div className="welcome-copy">
+          <p className="eyebrow accent">KGK CLOUD WORKSPACE</p>
+          <h2>Welcome back, {userName}!</h2>
+          <p className="welcome-subtitle">Your files, shared links and important work — all in one secure place.</p>
         </div>
-        <div className="storage-widget">
-          <span>Storage usage</span>
-          <strong>{formatBytes(storageQuota.usedStorageBytes)} of {formatBytes(storageQuota.maxStorageBytes)} used ({storageUsagePercent.toFixed(0)}%)</strong>
-          <div className="progress-bar">
-            <span style={{ width: `${storageUsagePercent}%` }}></span>
+        <div className="welcome-visual" aria-hidden="true">
+          <div className="welcome-glow welcome-glow-one" />
+          <div className="welcome-glow welcome-glow-two" />
+          <div className="cloud-orbit">
+            <span className="cloud-symbol">☁</span>
+            <span className="cloud-upload-arrow">↑</span>
           </div>
+          <span className="welcome-spark spark-one">✦</span>
+          <span className="welcome-spark spark-two">✧</span>
         </div>
       </section>
 
       <section className="stats-grid">
         {stats.map((stat) => (
           <div key={stat.label} className={`stat-card ${stat.color}`}>
-            <span>{stat.label}</span>
-            <strong>{stat.value}</strong>
+            <span className="stat-icon" aria-hidden="true">{stat.icon}</span>
+            <div className="stat-copy">
+              <span>{stat.label}</span>
+              <strong>{stat.value}</strong>
+            </div>
           </div>
         ))}
       </section>
 
-      <section className="content-grid">
-        <div className="panel">
+      <section className="content-grid dashboard-main-grid">
+        <div className="panel recent-panel">
           <div className="panel-header">
-            <h3>Recent files</h3>
-            <button type="button" className="link-button" onClick={() => setActiveView('recent')}>View all</button>
+            <div>
+              <p className="panel-kicker">YOUR WORKSPACE</p>
+              <h3>Recent files</h3>
+            </div>
+            <button type="button" className="link-button" onClick={() => setActiveView('recent')}>View all <span aria-hidden="true">↗</span></button>
           </div>
 
           <div className="file-list">
@@ -538,50 +556,88 @@ function DashboardPage({ session, onLogout }) {
               recentFiles.map((file) => (
                 <div key={file.id} className="file-row">
                   <div className="file-meta">
-                    <div className="file-icon">📄</div>
-                    <div>
+                    <div className="file-icon">▤</div>
+                    <div className="recent-file-copy">
                       <strong>{file.name}</strong>
                       <small>{file.type}</small>
                     </div>
                   </div>
-                  <span>{file.size}</span>
-                  <span>{file.date}</span>
+                  <span className="recent-file-size">{file.size}</span>
+                  <span className="recent-file-date">{file.date}</span>
                 </div>
               ))
             ) : (
-              <p className="empty-state">No uploaded files yet.</p>
+              <p className="empty-state">No uploaded files yet. Upload your first file to see it here.</p>
             )}
           </div>
         </div>
 
-        <div className="panel">
+        <div className="panel storage-overview-card">
           <div className="panel-header">
-            <h3>Quick access</h3>
-            <button type="button" className="link-button" onClick={() => setActiveView('folders')}>Manage</button>
+            <div>
+              <p className="panel-kicker">YOUR PLAN</p>
+              <h3>Storage usage</h3>
+            </div>
+            <span className="storage-plan-pill">Starter</span>
           </div>
-
-          <div className="quick-access-grid">
-            <div className="quick-card"><span>📁</span><strong>Work</strong></div>
-            <div className="quick-card"><span>🖼️</span><strong>Photos</strong></div>
-            <div className="quick-card"><span>📚</span><strong>Documents</strong></div>
-            <div className="quick-card"><span>🎬</span><strong>Videos</strong></div>
+          <div className="storage-overview-body">
+            <div className="usage-ring" style={{ '--usage': `${storageUsagePercent}%` }}>
+              <div className="usage-ring-inner">
+                <strong>{formatBytes(storageQuota.usedStorageBytes)}</strong>
+                <span>of {formatBytes(storageQuota.maxStorageBytes)}</span>
+              </div>
+            </div>
+            <div className="storage-details">
+              <div className="storage-detail-row"><span>Files used</span><strong>{storageQuota.fileCount} / {storageQuota.maxFiles}</strong></div>
+              <div className="storage-detail-row"><span>Storage used</span><strong>{storageUsagePercent.toFixed(1)}%</strong></div>
+              <div className="storage-detail-row"><span>Available</span><strong>{formatBytes(Math.max(0, storageQuota.maxStorageBytes - storageQuota.usedStorageBytes))}</strong></div>
+              <div className="progress-bar storage-detail-progress"><span style={{ width: `${storageUsagePercent}%` }} /></div>
+            </div>
           </div>
+          <p className="storage-footnote"><span aria-hidden="true">✦</span> Your files are protected in your private cloud storage.</p>
         </div>
       </section>
 
-      <section className="panel full-width">
-        <div className="panel-header">
-          <h3>Recent activity</h3>
-          <button type="button" className="link-button" onClick={() => setActiveView('shared')}>Shared</button>
+      <section className="dashboard-bottom-grid">
+        <div className="panel activity-panel">
+          <div className="panel-header">
+            <div>
+              <p className="panel-kicker">YOUR LATEST UPDATES</p>
+              <h3>Recent activity</h3>
+            </div>
+          </div>
+          <ul className="activity-list">
+            {recentActivity.map((item) => (
+              <li key={item}><span className="activity-dot" />{item}</li>
+            ))}
+          </ul>
         </div>
 
-        <ul className="activity-list">
-          {recentActivity.map((item) => (
-            <li key={item}>{item}</li>
-          ))}
-        </ul>
+        <div className="panel quick-actions-panel">
+          <div className="panel-header">
+            <div>
+              <p className="panel-kicker">GET THINGS DONE</p>
+              <h3>Quick actions</h3>
+            </div>
+            <span className="quick-actions-bolt" aria-hidden="true">✦</span>
+          </div>
+          <div className="dashboard-quick-actions">
+            <button type="button" className="dashboard-action upload-action" disabled={isUploading} onClick={() => fileInputRef.current?.click()}>
+              <span aria-hidden="true">↑</span><span>{isUploading ? 'Uploading…' : 'Upload file'}</span>
+            </button>
+            <button type="button" className="dashboard-action share-action" onClick={() => setActiveView('shared')}>
+              <span aria-hidden="true">↗</span><span>Shared files</span>
+            </button>
+            <button type="button" className="dashboard-action star-action" onClick={() => setActiveView('starred')}>
+              <span aria-hidden="true">★</span><span>Starred files</span>
+            </button>
+            <button type="button" className="dashboard-action trash-action" onClick={() => setActiveView('trash')}>
+              <span aria-hidden="true">⌑</span><span>Open trash</span>
+            </button>
+          </div>
+        </div>
       </section>
-    </>
+    </div>
   );
 
   const renderFilesView = () => (
@@ -880,8 +936,8 @@ function DashboardPage({ session, onLogout }) {
         <div className="sidebar-header">
           <div className="brand-mark small">K</div>
           <div>
-            <p className="eyebrow">Cloud workspace</p>
-            <h3>KGK Storage</h3>
+            <p className="eyebrow">YOUR PERSONAL CLOUD</p>
+            <h3>KGK Cloud Storage</h3>
           </div>
         </div>
 
@@ -907,8 +963,12 @@ function DashboardPage({ session, onLogout }) {
 
       <main className="dashboard-main">
         <header className="topbar">
+          <div className="topbar-heading">
+            <span className="topbar-kicker">SECURE CLOUD STORAGE</span>
+            <span className="topbar-title">Your workspace</span>
+          </div>
           <div className="search-box">
-            <span>🔎</span>
+            <span aria-hidden="true">⌕</span>
             <input type="text" value={searchTerm} placeholder="Search files and folders" onChange={(event) => setSearchTerm(event.target.value)} />
           </div>
 
