@@ -1232,6 +1232,7 @@ const createShare = async (req, res, next) => {
       fileId: file.id,
       userId: req.user.userId,
       token: shareToken,
+      shareUrl,
       expiresAt,
       createdAt: new Date().toISOString(),
       isActive: true,
@@ -1262,7 +1263,12 @@ const listSharedFiles = async (req, res, next) => {
         const file = await File.findOne({ _id: share.fileId, userId: req.user.userId, isDeleted: { $ne: true } });
         if (file) {
           sharedFiles.push({
-            ...normalizeRecord(share),
+            share: {
+              ...normalizeRecord(share),
+              // Build the URL from the current production configuration so shares
+              // created before a backend URL change are shown with the active host.
+              shareUrl: createShareUrl(req, share.token),
+            },
             file: normalizeRecord(file),
           });
         }
@@ -1275,12 +1281,17 @@ const listSharedFiles = async (req, res, next) => {
       .filter((share) => share.userId === req.user.userId && share.isActive)
       .map((share) => {
         const file = inMemoryFiles.find((item) => item.id === share.fileId && item.userId === req.user.userId && !item.isDeleted);
+        if (!file) return null;
+
         return {
-          ...share,
+          share: {
+            ...normalizeRecord(share),
+            shareUrl: createShareUrl(req, share.token),
+          },
           file: normalizeRecord(file),
         };
       })
-      .filter((entry) => entry.file);
+      .filter(Boolean);
 
     return res.status(200).json({ shares: sharedFiles });
   } catch (error) {
@@ -1313,12 +1324,10 @@ const accessSharedFile = async (req, res, next) => {
       await share.save();
       const downloadUrl = await generateDownloadUrl(share.userId, file.s3Key);
 
-      return res.status(200).json({
-        message: 'Shared file access granted.',
-        downloadUrl,
-        file: normalizeRecord(file),
-        share: normalizeRecord(share),
-      });
+      // The public share URL is the user-facing download link. Redirect each
+      // visit to a freshly generated short-lived S3 URL instead of exposing
+      // an API JSON payload in the browser.
+      return res.redirect(302, downloadUrl);
     }
 
     const share = inMemoryShares.find((entry) => entry.token === token && entry.isActive);
@@ -1340,12 +1349,7 @@ const accessSharedFile = async (req, res, next) => {
     share.downloads += 1;
     const downloadUrl = await generateDownloadUrl(share.userId, file.s3Key);
 
-    return res.status(200).json({
-      message: 'Shared file access granted.',
-      downloadUrl,
-      file: normalizeRecord(file),
-      share,
-    });
+    return res.redirect(302, downloadUrl);
   } catch (error) {
     next(error);
   }

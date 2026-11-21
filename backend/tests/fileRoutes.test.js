@@ -394,11 +394,19 @@ test('share endpoint creates a public download link for a users file', async () 
     const sharePayload = await shareResponse.json();
     assert.ok(sharePayload.share.shareUrl.includes('/api/files/shared/'));
 
-    const publicResponse = await fetch(sharePayload.share.shareUrl);
-    assert.equal(publicResponse.status, 200);
-    const publicPayload = await publicResponse.json();
-    assert.equal(publicPayload.file.originalName, 'shared-doc.pdf');
-    assert.ok(publicPayload.downloadUrl);
+    const publicResponse = await fetch(sharePayload.share.shareUrl, { redirect: 'manual' });
+    assert.equal(publicResponse.status, 302);
+    assert.match(publicResponse.headers.get('location') || '', /^https:\/\/local-dev\.example\.com\/downloads\//);
+
+    const sharedListResponse = await fetch('http://127.0.0.1:' + port + '/api/files/shared', {
+      headers: authHeaders(user.token, false),
+    });
+    assert.equal(sharedListResponse.status, 200);
+    const sharedListPayload = await sharedListResponse.json();
+    assert.equal(sharedListPayload.shares.length, 1);
+    assert.equal(sharedListPayload.shares[0].share.token, sharePayload.share.token);
+    assert.equal(sharedListPayload.shares[0].file.originalName, 'shared-doc.pdf');
+    assert.ok(sharedListPayload.shares[0].share.shareUrl);
   } finally {
     server.close();
   }
