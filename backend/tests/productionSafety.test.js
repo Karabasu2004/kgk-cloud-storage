@@ -173,7 +173,7 @@ test('presigned upload request includes the supplied object size in signed heade
     const file = await createFile(port, user.token, 'bounded.txt', 123);
     const signedHeaders = new URL(file.uploadUrl).searchParams.get('X-Amz-SignedHeaders');
     assert.match(signedHeaders, /content-length/);
-    assert.equal(file.file.size, 0);
+    assert.equal(file.file.size, 123);
   });
 });
 
@@ -240,7 +240,7 @@ test('expired public share links are rejected', async () => {
   });
 });
 
-test('oversized main uploads are deleted from S3 and remain unconfirmed', async () => {
+test('oversized main uploads are deleted from S3 and release the pending reservation', async () => {
   process.env.NODE_ENV = 'test';
   process.env.MAX_UPLOAD_SIZE_BYTES = '10';
   await withServer(async (port) => {
@@ -267,12 +267,12 @@ test('oversized main uploads are deleted from S3 and remain unconfirmed', async 
     });
 
     assert.equal(deletedKey, file.file.s3Key);
-    assert.equal(global.__kgkFiles[0].status, 'pending');
+    assert.equal(global.__kgkFiles.length, 0);
   });
   delete process.env.MAX_UPLOAD_SIZE_BYTES;
 });
 
-test('oversized version uploads are deleted from S3 and remain pending', async () => {
+test('oversized version uploads are deleted from S3 and release the pending reservation', async () => {
   process.env.NODE_ENV = 'test';
   process.env.MAX_UPLOAD_SIZE_BYTES = '10';
   await withServer(async (port) => {
@@ -308,7 +308,7 @@ test('oversized version uploads are deleted from S3 and remain pending', async (
     });
 
     assert.equal(deletedKey, versionData.objectKey);
-    assert.equal(global.__kgkVersions[0].status, 'pending');
+    assert.equal(global.__kgkVersions.length, 0);
   });
   delete process.env.MAX_UPLOAD_SIZE_BYTES;
 });
@@ -325,14 +325,19 @@ test('file deletion deduplicates main and version S3 keys before removing metada
     });
     const versionData = await versionResponse.json();
     global.__kgkVersions[0].s3Key = file.file.s3Key;
-    const deletedKeys = [];
+    const trashResponse = await fetch(`http://127.0.0.1:${port}/api/files/${file.file.id}`, {
+      method: 'DELETE',
+      headers: authHeaders(user.token, false),
+    });
+    assert.equal(trashResponse.status, 200);
 
+    const deletedKeys = [];
     await withS3Send(async (command) => {
       assert.ok(command instanceof DeleteObjectCommand);
       deletedKeys.push(command.input.Key);
       return {};
     }, async () => {
-      const response = await fetch(`http://127.0.0.1:${port}/api/files/${file.file.id}`, {
+      const response = await fetch(`http://127.0.0.1:${port}/api/files/${file.file.id}/permanent`, {
         method: 'DELETE',
         headers: authHeaders(user.token, false),
       });
@@ -358,15 +363,22 @@ test('S3 deletion failure preserves file, share, and version metadata for retry'
       body: JSON.stringify({ fileName: 'version.txt', mimeType: 'text/plain', size: 1 }),
     });
     await versionResponse.json();
-    global.__kgkShares.push({ id: 'share-1', fileId: file.file.id, userId: user.user.id });
-    let callCount = 0;
+    global.__kgkShares.push({ id: 'share-1', fileId: file.file.id, userId: user.user.id, isActive: true });
 
+    const trashResponse = await fetch(`http://127.0.0.1:${port}/api/files/${file.file.id}`, {
+      method: 'DELETE',
+      headers: authHeaders(user.token, false),
+    });
+    assert.equal(trashResponse.status, 200);
+    assert.equal(global.__kgkShares[0].isActive, false);
+
+    let callCount = 0;
     await withS3Send(async () => {
       callCount += 1;
       if (callCount === 2) throw new Error('mocked S3 deletion failure');
       return {};
     }, async () => {
-      const response = await fetch(`http://127.0.0.1:${port}/api/files/${file.file.id}`, {
+      const response = await fetch(`http://127.0.0.1:${port}/api/files/${file.file.id}/permanent`, {
         method: 'DELETE',
         headers: authHeaders(user.token, false),
       });

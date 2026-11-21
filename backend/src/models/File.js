@@ -27,6 +27,10 @@ const fileSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    reservedSize: {
+      type: Number,
+      default: 0,
+    },
     status: {
       type: String,
       default: 'pending',
@@ -36,6 +40,14 @@ const fileSchema = new mongoose.Schema(
       default: null,
     },
     isDeleted: {
+      type: Boolean,
+      default: false,
+    },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
+    isStarred: {
       type: Boolean,
       default: false,
     },

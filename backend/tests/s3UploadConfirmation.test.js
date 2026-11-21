@@ -98,11 +98,14 @@ test('upload confirmation verifies the S3 object and stores its actual size', as
 });
 
 test('upload confirmation does not mark a file uploaded when the S3 object is missing', async () => {
-  await withS3Response(async () => {
-    const error = new Error('not found');
-    error.name = 'NotFound';
-    error.$metadata = { httpStatusCode: 404 };
-    throw error;
+  await withS3Response(async (command) => {
+    if (command.constructor.name === 'HeadObjectCommand') {
+      const error = new Error('not found');
+      error.name = 'NotFound';
+      error.$metadata = { httpStatusCode: 404 };
+      throw error;
+    }
+    return {};
   }, async () => {
     await withServer(async (port) => {
       const { token } = await registerUser(port, 'Alice', 's3-missing@example.com');
@@ -113,7 +116,7 @@ test('upload confirmation does not mark a file uploaded when the S3 object is mi
       assert.deepEqual(await response.json(), {
         message: 'Uploaded file was not found in storage.',
       });
-      assert.equal(global.__kgkFiles[0].status, 'pending');
+      assert.equal(global.__kgkFiles.length, 0);
     });
   });
 });
@@ -129,7 +132,7 @@ test('upload confirmation rejects an S3 object whose size differs from the expec
       assert.deepEqual(await response.json(), {
         message: 'Uploaded file size does not match the expected size.',
       });
-      assert.equal(global.__kgkFiles[0].status, 'pending');
+      assert.equal(global.__kgkFiles.length, 0);
     });
   });
 });

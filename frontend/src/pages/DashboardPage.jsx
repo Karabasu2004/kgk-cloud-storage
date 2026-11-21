@@ -1,14 +1,22 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   confirmUpload,
+  cancelPendingUpload,
   createFolder,
   deleteFile,
   deleteFolder,
   fetchFilePreview,
   fetchFileVersions,
   fetchFiles,
+  fetchRecentFiles,
+  fetchStarredFiles,
+  fetchTrashFiles,
+  fetchStorageQuota,
   fetchFolders,
   fetchSharedFiles,
+  toggleStarFile,
+  restoreFile,
+  permanentDeleteFile,
   generateFileDownloadUrl,
   generateShareLink,
   generateUploadUrl,
@@ -41,6 +49,15 @@ function DashboardPage({ session, onLogout }) {
   const uploadInProgressRef = useRef(false);
   const versionUploadInProgressRef = useRef(false);
   const [files, setFiles] = useState([]);
+  const [recentFilesData, setRecentFilesData] = useState([]);
+  const [starredFiles, setStarredFiles] = useState([]);
+  const [trashFiles, setTrashFiles] = useState([]);
+  const [storageQuota, setStorageQuota] = useState({
+    fileCount: 0,
+    usedStorageBytes: 0,
+    maxStorageBytes: 104857600,
+    maxFiles: 10,
+  });
   const [folders, setFolders] = useState([]);
   const [sharedFiles, setSharedFiles] = useState([]);
   const [errorMessage, setErrorMessage] = useState('');
@@ -65,13 +82,34 @@ function DashboardPage({ session, onLogout }) {
 
     setIsLoading(true);
     try {
-      const [filesResult, foldersResult, sharedResult] = await Promise.all([
+      const [
+        filesResult,
+        recentResult,
+        starredResult,
+        trashResult,
+        quotaResult,
+        foldersResult,
+        sharedResult,
+      ] = await Promise.all([
         fetchFiles(session.token, fileParams),
+        fetchRecentFiles(session.token),
+        fetchStarredFiles(session.token),
+        fetchTrashFiles(session.token),
+        fetchStorageQuota(session.token),
         fetchFolders(session.token),
         fetchSharedFiles(session.token),
       ]);
 
       setFiles(filesResult.files || []);
+      setRecentFilesData(recentResult.files || []);
+      setStarredFiles(starredResult.files || []);
+      setTrashFiles(trashResult.files || []);
+      setStorageQuota({
+        fileCount: Number(quotaResult.fileCount) || 0,
+        usedStorageBytes: Number(quotaResult.usedStorageBytes) || 0,
+        maxStorageBytes: Number(quotaResult.maxStorageBytes) || 104857600,
+        maxFiles: Number(quotaResult.maxFiles) || 10,
+      });
       setFolders(foldersResult.folders || []);
       setSharedFiles(sharedResult.shares || []);
       setErrorMessage('');
@@ -98,27 +136,48 @@ function DashboardPage({ session, onLogout }) {
     return counts;
   }, [files]);
 
-  const stats = useMemo(() => {
-    const totalStorage = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
+  const stats = useMemo(() => ([
+    { label: 'Files', value: `${storageQuota.fileCount}/${storageQuota.maxFiles}`, color: 'blue' },
+    { label: 'Folders', value: String(folders.length), color: 'green' },
+    { label: 'Storage Used', value: `${formatBytes(storageQuota.usedStorageBytes)} / ${formatBytes(storageQuota.maxStorageBytes)}`, color: 'orange' },
+    { label: 'Shared', value: String(sharedFiles.length), color: 'purple' },
+  ]), [storageQuota, folders.length, sharedFiles.length]);
 
-    return [
-      { label: 'Files', value: String(files.length), color: 'blue' },
-      { label: 'Folders', value: String(folders.length), color: 'green' },
-      { label: 'Storage Used', value: formatBytes(totalStorage), color: 'orange' },
-      { label: 'Shared', value: String(sharedFiles.length), color: 'purple' },
-    ];
-  }, [files, folders.length, sharedFiles.length]);
+  const storageUsagePercent = storageQuota.maxStorageBytes > 0
+    ? Math.min(100, (storageQuota.usedStorageBytes / storageQuota.maxStorageBytes) * 100)
+    : 0;
+
+  const viewFiles = activeView === 'recent'
+    ? recentFilesData
+    : activeView === 'starred'
+      ? starredFiles
+      : activeView === 'trash'
+        ? trashFiles
+        : files;
+  const visibleFiles = viewFiles.filter((file) => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return true;
+    return `${file.originalName || ''} ${file.fileName || ''}`.toLowerCase().includes(query);
+  });
+  const collectionTitle = activeView === 'recent'
+    ? 'Recent Files'
+    : activeView === 'starred'
+      ? 'Starred Files'
+      : activeView === 'trash'
+        ? 'Trash'
+        : 'My Files';
+  const isTrashView = activeView === 'trash';
 
   const activeFolderName = selectedFolderId
     ? folders.find((folder) => folder.id === selectedFolderId)?.name || 'Selected folder'
     : 'All files';
 
-  const recentFiles = files.slice(0, 3).map((file) => ({
+  const recentFiles = recentFilesData.slice(0, 3).map((file) => ({
     id: file.id,
     name: file.originalName,
     type: file.mimeType || 'file',
     size: formatBytes(file.size),
-    date: new Date(file.createdAt).toLocaleDateString(),
+    date: new Date(file.updatedAt || file.createdAt).toLocaleDateString(),
   }));
 
   const recentActivity = files.length
@@ -134,6 +193,7 @@ function DashboardPage({ session, onLogout }) {
     uploadInProgressRef.current = true;
     setIsUploading(true);
     const mimeType = selectedFile.type || 'application/octet-stream';
+    let pendingFileId = null;
 
     try {
       setErrorMessage('');
@@ -153,6 +213,7 @@ function DashboardPage({ session, onLogout }) {
       if (!uploadData.uploadUrl || !uploadData.file?.id) {
         throw new Error('The server did not return a valid upload URL.');
       }
+      pendingFileId = uploadData.file.id;
 
       const uploadResponse = await fetch(uploadData.uploadUrl, {
         method: 'PUT',
@@ -171,7 +232,15 @@ function DashboardPage({ session, onLogout }) {
       await loadFiles();
       setNoticeMessage(`${selectedFile.name} uploaded successfully.`);
     } catch (error) {
+      if (pendingFileId) {
+        try {
+          await cancelPendingUpload(session.token, pendingFileId);
+        } catch {
+          // Confirmation may already have completed, or the pending reservation may already be removed.
+        }
+      }
       setErrorMessage(error.message ? `Upload failed: ${error.message}` : 'Upload failed. Please try again.');
+      await loadFiles();
     } finally {
       uploadInProgressRef.current = false;
       setIsUploading(false);
@@ -248,22 +317,59 @@ function DashboardPage({ session, onLogout }) {
     }
   };
 
-  const handleDeleteFile = async (fileId) => {
+  const handleDeleteFile = async (file) => {
     try {
       setErrorMessage('');
-      const file = files.find((item) => item.id === fileId);
       if (!file) return;
 
-      const shouldDelete = window.confirm(`Delete ${file.originalName}?`);
+      const shouldDelete = window.confirm(`Move ${file.originalName} to Trash?`);
       if (!shouldDelete) {
         return;
       }
 
-      await deleteFile(session.token, fileId);
+      await deleteFile(session.token, file.id);
       await loadFiles();
       setNoticeMessage(`${file.originalName} deleted.`);
     } catch (error) {
       setErrorMessage(error.message || 'Unable to delete file.');
+    }
+  };
+
+  const handleToggleStar = async (file) => {
+    try {
+      setErrorMessage('');
+      await toggleStarFile(session.token, file.id);
+      await loadFiles();
+      setNoticeMessage(file.isStarred ? 'File removed from Starred.' : 'File added to Starred.');
+    } catch (error) {
+      setErrorMessage(error.message || 'Unable to update Starred status.');
+    }
+  };
+
+  const handleRestoreFile = async (file) => {
+    try {
+      setErrorMessage('');
+      await restoreFile(session.token, file.id);
+      await loadFiles();
+      setNoticeMessage(`${file.originalName} restored successfully.`);
+    } catch (error) {
+      setErrorMessage(error.message || 'Unable to restore file.');
+    }
+  };
+
+  const handlePermanentDeleteFile = async (file) => {
+    const confirmed = window.confirm(
+      `Permanently delete ${file.originalName}? This action cannot be undone.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      setErrorMessage('');
+      await permanentDeleteFile(session.token, file.id);
+      await loadFiles();
+      setNoticeMessage(`${file.originalName} permanently deleted.`);
+    } catch (error) {
+      setErrorMessage(error.message || 'Unable to permanently delete file.');
     }
   };
 
@@ -404,9 +510,9 @@ function DashboardPage({ session, onLogout }) {
         </div>
         <div className="storage-widget">
           <span>Storage usage</span>
-          <strong>{files.length ? `${Math.min(100, (files.reduce((sum, file) => sum + (Number(file.size) || 0), 0) / 1_600_000_000) * 100).toFixed(0)}% of 16 GB used` : '0% of 16 GB used'}</strong>
+          <strong>{formatBytes(storageQuota.usedStorageBytes)} of {formatBytes(storageQuota.maxStorageBytes)} used ({storageUsagePercent.toFixed(0)}%)</strong>
           <div className="progress-bar">
-            <span style={{ width: `${Math.min(100, (files.reduce((sum, file) => sum + (Number(file.size) || 0), 0) / 1_600_000_000) * 100)}%` }}></span>
+            <span style={{ width: `${storageUsagePercent}%` }}></span>
           </div>
         </div>
       </section>
@@ -424,7 +530,7 @@ function DashboardPage({ session, onLogout }) {
         <div className="panel">
           <div className="panel-header">
             <h3>Recent files</h3>
-            <button type="button" className="link-button" onClick={() => setActiveView('files')}>View all</button>
+            <button type="button" className="link-button" onClick={() => setActiveView('recent')}>View all</button>
           </div>
 
           <div className="file-list">
@@ -481,22 +587,24 @@ function DashboardPage({ session, onLogout }) {
   const renderFilesView = () => (
     <section className="panel file-manager-panel">
       <div className="panel-header file-manager-header">
-        <h3>My Files</h3>
+        <h3>{collectionTitle}</h3>
         <div className="file-toolbar">
-          <div className="folder-filter-wrap">
-            <label htmlFor="folderFilter" className="sr-only">Filter by folder</label>
-            <select
-              id="folderFilter"
-              value={selectedFolderId}
-              onChange={(event) => setSelectedFolderId(event.target.value)}
-              className="filter-select"
-            >
-              <option value="">All folders</option>
-              {folders.map((folder) => (
-                <option key={folder.id} value={folder.id}>{folder.name}</option>
-              ))}
-            </select>
-          </div>
+          {activeView === 'files' ? (
+            <div className="folder-filter-wrap">
+              <label htmlFor="folderFilter" className="sr-only">Filter by folder</label>
+              <select
+                id="folderFilter"
+                value={selectedFolderId}
+                onChange={(event) => setSelectedFolderId(event.target.value)}
+                className="filter-select"
+              >
+                <option value="">All folders</option>
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>{folder.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <input
             type="text"
             value={searchTerm}
@@ -505,24 +613,28 @@ function DashboardPage({ session, onLogout }) {
             className="search-inline"
             aria-label="Search files"
           />
-          <button type="button" className="secondary-button small-button" disabled={isUploading} onClick={() => fileInputRef.current?.click()}>
-            {isUploading ? 'Uploading...' : 'Upload file'}
-          </button>
-          <form onSubmit={handleCreateFolder} className="folder-form">
-            <input
-              type="text"
-              value={folderName}
-              onChange={(event) => setFolderName(event.target.value)}
-              placeholder="New folder"
-              aria-label="New folder name"
-            />
-            <button type="submit" className="secondary-button small-button">Create folder</button>
-          </form>
+          {activeView === 'files' ? (
+            <>
+              <button type="button" className="secondary-button small-button" disabled={isUploading} onClick={() => fileInputRef.current?.click()}>
+                {isUploading ? 'Uploading...' : 'Upload file'}
+              </button>
+              <form onSubmit={handleCreateFolder} className="folder-form">
+                <input
+                  type="text"
+                  value={folderName}
+                  onChange={(event) => setFolderName(event.target.value)}
+                  placeholder="New folder"
+                  aria-label="New folder name"
+                />
+                <button type="submit" className="secondary-button small-button">Create folder</button>
+              </form>
+            </>
+          ) : null}
         </div>
       </div>
 
-      <div className="file-manager-grid">
-        <div className="folder-list panel-subsection">
+      <div className={`file-manager-grid ${activeView === 'files' ? '' : 'single-list'}`}>
+        {activeView === 'files' ? <div className="folder-list panel-subsection">
           <div className="panel-header compact-header">
             <h4>Folders</h4>
             {selectedFolderId ? (
@@ -551,11 +663,11 @@ function DashboardPage({ session, onLogout }) {
           ) : (
             <p className="empty-state">No folders yet.</p>
           )}
-        </div>
+        </div> : null}
 
         <div className="file-table-wrap panel-subsection">
           <div className="panel-header compact-header">
-            <h4>{selectedFolderId ? activeFolderName : 'Files'}</h4>
+            <h4>{activeView === 'files' && selectedFolderId ? activeFolderName : collectionTitle}</h4>
             {selectedFolderId ? (
               <button type="button" className="link-button small-link" onClick={() => setSelectedFolderId('')}>All files</button>
             ) : null}
@@ -573,20 +685,32 @@ function DashboardPage({ session, onLogout }) {
                 </tr>
               </thead>
               <tbody>
-                {files.length ? files.map((file) => (
+                {visibleFiles.length ? visibleFiles.map((file) => (
                   <tr key={file.id}>
                     <td>{file.originalName}</td>
                     <td>{file.mimeType || 'file'}</td>
                     <td>{formatBytes(file.size)}</td>
                     <td>{new Date(file.updatedAt).toLocaleDateString()}</td>
                     <td className="file-actions">
-                      <button type="button" className="mini-action" onClick={() => handleDownloadFile(file)}>Download</button>
-                      <button type="button" className="mini-action" onClick={() => handlePreviewFile(file)}>Preview</button>
-                      <button type="button" className="mini-action" onClick={() => handleShareFile(file)}>Share</button>
-                      <button type="button" className="mini-action" onClick={() => handleRenameFile(file)}>Rename</button>
-                      <button type="button" className="mini-action" onClick={() => handleMoveFileToFolder(file)}>Move</button>
-                      <button type="button" className="mini-action" onClick={() => openVersionModal(file)}>Versions</button>
-                      <button type="button" className="mini-action danger" onClick={() => handleDeleteFile(file.id)}>Delete</button>
+                      {isTrashView ? (
+                        <>
+                          <button type="button" className="mini-action" onClick={() => handleRestoreFile(file)}>Restore</button>
+                          <button type="button" className="mini-action danger" onClick={() => handlePermanentDeleteFile(file)}>Delete permanently</button>
+                        </>
+                      ) : (
+                        <>
+                          <button type="button" className="mini-action" onClick={() => handleToggleStar(file)}>
+                            {file.isStarred ? 'Unstar' : 'Star'}
+                          </button>
+                          <button type="button" className="mini-action" onClick={() => handleDownloadFile(file)}>Download</button>
+                          <button type="button" className="mini-action" onClick={() => handlePreviewFile(file)}>Preview</button>
+                          <button type="button" className="mini-action" onClick={() => handleShareFile(file)}>Share</button>
+                          <button type="button" className="mini-action" onClick={() => handleRenameFile(file)}>Rename</button>
+                          <button type="button" className="mini-action" onClick={() => handleMoveFileToFolder(file)}>Move</button>
+                          <button type="button" className="mini-action" onClick={() => openVersionModal(file)}>Versions</button>
+                          <button type="button" className="mini-action danger" onClick={() => handleDeleteFile(file)}>Move to Trash</button>
+                        </>
+                      )}
                     </td>
                   </tr>
                 )) : (
@@ -700,7 +824,7 @@ function DashboardPage({ session, onLogout }) {
   );
 
   const renderCurrentView = () => {
-    if (activeView === 'files') return renderFilesView();
+    if (['files', 'recent', 'starred', 'trash'].includes(activeView)) return renderFilesView();
     if (activeView === 'folders') return renderFoldersView();
     if (activeView === 'shared') return renderSharedView();
     if (activeView === 'settings') return renderSettingsView();
@@ -766,9 +890,9 @@ function DashboardPage({ session, onLogout }) {
           <button type="button" className={`nav-item ${activeView === 'files' ? 'active' : ''}`} onClick={() => setActiveView('files')}>My Files</button>
           <button type="button" className={`nav-item ${activeView === 'folders' ? 'active' : ''}`} onClick={() => setActiveView('folders')}>My Folders</button>
           <button type="button" className={`nav-item ${activeView === 'shared' ? 'active' : ''}`} onClick={() => setActiveView('shared')}>Shared Files</button>
-          <button type="button" className="nav-item">Recent Files</button>
-          <button type="button" className="nav-item">Starred</button>
-          <button type="button" className="nav-item">Trash</button>
+          <button type="button" className={`nav-item ${activeView === 'recent' ? 'active' : ''}`} onClick={() => setActiveView('recent')}>Recent Files</button>
+          <button type="button" className={`nav-item ${activeView === 'starred' ? 'active' : ''}`} onClick={() => setActiveView('starred')}>Starred</button>
+          <button type="button" className={`nav-item ${activeView === 'trash' ? 'active' : ''}`} onClick={() => setActiveView('trash')}>Trash</button>
           <button type="button" className={`nav-item ${activeView === 'settings' ? 'active' : ''}`} onClick={() => setActiveView('settings')}>Settings</button>
         </nav>
 

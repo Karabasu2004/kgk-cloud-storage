@@ -62,6 +62,65 @@ export const fetchFiles = async (token, params = {}) => {
   return handleResponse(response);
 };
 
+export const fetchRecentFiles = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/files/recent`, {
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const fetchStarredFiles = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/files/starred`, {
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const toggleStarFile = async (token, fileId) => {
+  const response = await fetch(`${API_BASE_URL}/files/${fileId}/star`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const fetchTrashFiles = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/files/trash`, {
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const restoreFile = async (token, fileId) => {
+  const response = await fetch(`${API_BASE_URL}/files/${fileId}/restore`, {
+    method: 'POST',
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const permanentDeleteFile = async (token, fileId) => {
+  const response = await fetch(`${API_BASE_URL}/files/${fileId}/permanent`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const fetchStorageQuota = async (token) => {
+  const response = await fetch(`${API_BASE_URL}/files/quota`, {
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
 export const fetchFolders = async (token) => {
   const response = await fetch(`${API_BASE_URL}/folders`, {
     headers: getAuthHeaders(token),
@@ -202,6 +261,15 @@ export const confirmVersionUpload = async (token, fileId, versionId, size) => {
   return handleResponse(response);
 };
 
+export const cancelVersionUpload = async (token, fileId, versionId) => {
+  const response = await fetch(`${API_BASE_URL}/files/${fileId}/versions/${versionId}/cancel`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
 export const uploadVersion = async (token, fileId, file) => {
   if (file.size > MAX_UPLOAD_SIZE_BYTES) {
     throw new Error('File exceeds the maximum allowed size.');
@@ -209,25 +277,37 @@ export const uploadVersion = async (token, fileId, file) => {
 
   const mimeType = file.type || 'application/octet-stream';
   const uploadData = await createVersion(token, fileId, file.name, mimeType, file.size);
+  const pendingVersionId = uploadData.version?.id;
 
-  if (!uploadData.uploadUrl || !uploadData.version?.id) {
-    throw new Error('The server did not return a valid version upload URL.');
+  try {
+    if (!uploadData.uploadUrl || !pendingVersionId) {
+      throw new Error('The server did not return a valid version upload URL.');
+    }
+
+    const uploadResponse = await fetch(uploadData.uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': mimeType,
+        'Cache-Control': 'no-cache',
+      },
+      body: file,
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error(`Storage upload failed (HTTP ${uploadResponse.status}).`);
+    }
+
+    return await confirmVersionUpload(token, fileId, pendingVersionId, file.size);
+  } catch (error) {
+    if (pendingVersionId) {
+      try {
+        await cancelVersionUpload(token, fileId, pendingVersionId);
+      } catch {
+        // Confirmation may already have completed; expired reservations are also cleaned on the server.
+      }
+    }
+    throw error;
   }
-
-  const uploadResponse = await fetch(uploadData.uploadUrl, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': mimeType,
-      'Cache-Control': 'no-cache',
-    },
-    body: file,
-  });
-
-  if (!uploadResponse.ok) {
-    throw new Error(`Storage upload failed (HTTP ${uploadResponse.status}).`);
-  }
-
-  return confirmVersionUpload(token, fileId, uploadData.version.id, file.size);
 };
 
 export const restoreVersion = async (token, fileId, versionId) => {
@@ -241,6 +321,15 @@ export const restoreVersion = async (token, fileId, versionId) => {
 
 export const deleteFile = async (token, fileId) => {
   const response = await fetch(`${API_BASE_URL}/files/${fileId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders(token),
+  });
+
+  return handleResponse(response);
+};
+
+export const cancelPendingUpload = async (token, fileId) => {
+  const response = await fetch(`${API_BASE_URL}/files/${fileId}/cancel`, {
     method: 'DELETE',
     headers: getAuthHeaders(token),
   });

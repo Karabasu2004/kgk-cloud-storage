@@ -2,6 +2,10 @@ const { validateJwtConfiguration } = require('./jwt');
 
 const DEFAULT_MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024;
 const MAX_UPLOAD_SIZE_ENV = 'MAX_UPLOAD_SIZE_BYTES';
+const DEFAULT_MAX_USER_STORAGE_BYTES = 104857600;
+const MAX_USER_STORAGE_ENV = 'MAX_USER_STORAGE_BYTES';
+const DEFAULT_MAX_USER_FILES = 10;
+const MAX_USER_FILES_ENV = 'MAX_USER_FILES';
 
 const getFrontendOrigins = () => {
   const configuredOrigins = process.env.FRONTEND_URL;
@@ -50,6 +54,34 @@ const getMaxUploadSizeBytes = () => {
   return size;
 };
 
+const getMaxUserStorageBytes = () => {
+  const configuredValue = process.env[MAX_USER_STORAGE_ENV];
+  if (configuredValue === undefined || configuredValue === '') {
+    return DEFAULT_MAX_USER_STORAGE_BYTES;
+  }
+
+  const size = Number(configuredValue);
+  if (!Number.isSafeInteger(size) || size < 1) {
+    throw new Error('MAX_USER_STORAGE_BYTES must be a positive integer.');
+  }
+
+  return size;
+};
+
+const getMaxUserFiles = () => {
+  const configuredValue = process.env[MAX_USER_FILES_ENV];
+  if (configuredValue === undefined || configuredValue === '') {
+    return DEFAULT_MAX_USER_FILES;
+  }
+
+  const count = Number(configuredValue);
+  if (!Number.isSafeInteger(count) || count < 1) {
+    throw new Error('MAX_USER_FILES must be a positive integer.');
+  }
+
+  return count;
+};
+
 const getPublicApiBaseUrl = (req) => (
   process.env.NODE_ENV === 'production'
     ? process.env.PUBLIC_API_BASE_URL
@@ -67,6 +99,8 @@ const validateProductionConfig = () => {
   if (process.env.NODE_ENV !== 'production') {
     getFrontendOrigins();
     getMaxUploadSizeBytes();
+    getMaxUserStorageBytes();
+    getMaxUserFiles();
     return;
   }
   validateJwtConfiguration();
@@ -91,6 +125,8 @@ const validateProductionConfig = () => {
 
   getFrontendOrigins();
   getMaxUploadSizeBytes();
+  getMaxUserStorageBytes();
+  getMaxUserFiles();
 
   let publicApiUrl;
   try {
@@ -114,8 +150,12 @@ const validateProductionConfig = () => {
 
 module.exports = {
   DEFAULT_MAX_UPLOAD_SIZE_BYTES,
+  DEFAULT_MAX_USER_STORAGE_BYTES,
+  DEFAULT_MAX_USER_FILES,
   getFrontendOrigins,
   getMaxUploadSizeBytes,
+  getMaxUserStorageBytes,
+  getMaxUserFiles,
   getPublicApiBaseUrl,
   validateProductionConfig,
 };

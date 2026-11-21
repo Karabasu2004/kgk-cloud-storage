@@ -607,6 +607,10 @@ h1 {
   gap: 18px;
 }
 
+.file-manager-grid.single-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .panel-subsection {
   background: rgba(248, 250, 252, 0.9);
   border: 1px solid var(--border);
@@ -720,6 +724,12 @@ h1 {
   border-color: rgba(220, 38, 38, 0.2);
   color: var(--danger);
   background: rgba(220, 38, 38, 0.05);
+}
+
+.mini-action.starred {
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #d97706;
+  background: rgba(245, 158, 11, 0.08);
 }
 
 .stack-list {

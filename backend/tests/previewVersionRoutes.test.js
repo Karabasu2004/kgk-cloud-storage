@@ -158,12 +158,15 @@ test('version confirmation verifies the database-stored S3 key and stores the ac
   });
 });
 
-test('version confirmation rejects a missing S3 object and leaves the version pending', async () => {
-  await withS3Response(async () => {
-    const error = new Error('not found');
-    error.name = 'NoSuchKey';
-    error.$metadata = { httpStatusCode: 404 };
-    throw error;
+test('version confirmation rejects a missing S3 object and releases the pending reservation', async () => {
+  await withS3Response(async (command) => {
+    if (command.constructor.name === 'HeadObjectCommand') {
+      const error = new Error('not found');
+      error.name = 'NoSuchKey';
+      error.$metadata = { httpStatusCode: 404 };
+      throw error;
+    }
+    return {};
   }, async () => {
     await withServer(async (port) => {
       const { token } = await registerUser(port, 'Alice', 'version-missing@example.com');
@@ -180,12 +183,12 @@ test('version confirmation rejects a missing S3 object and leaves the version pe
       );
 
       assert.equal(response.status, 404);
-      assert.equal(global.__kgkVersions[0].status, 'pending');
+      assert.equal(global.__kgkVersions.length, 0);
     });
   });
 });
 
-test('version confirmation rejects a size mismatch and leaves the version pending', async () => {
+test('version confirmation rejects a size mismatch and releases the pending reservation', async () => {
   await withS3Response(async () => ({ ContentLength: 127 }), async () => {
     await withServer(async (port) => {
       const { token } = await registerUser(port, 'Alice', 'version-size@example.com');
@@ -202,7 +205,7 @@ test('version confirmation rejects a size mismatch and leaves the version pendin
       );
 
       assert.equal(response.status, 400);
-      assert.equal(global.__kgkVersions[0].status, 'pending');
+      assert.equal(global.__kgkVersions.length, 0);
     });
   });
 });
@@ -300,6 +303,10 @@ test('successful restoration switches metadata to the verified existing S3 key',
     await withServer(async (port) => {
       const { token } = await registerUser(port, 'Alice', 'restore-success@example.com');
       const file = await createFile(port, token, 'main.txt', 'text/plain');
+      const originalFile = global.__kgkFiles[0];
+      originalFile.status = 'uploaded';
+      originalFile.size = 64;
+      const originalS3Key = originalFile.s3Key;
       const versionData = await createVersion(port, token, file.file.id, 'restored.txt');
       const storedVersion = global.__kgkVersions[0];
       storedVersion.status = 'uploaded';
@@ -319,6 +326,26 @@ test('successful restoration switches metadata to the verified existing S3 key',
       assert.equal(payload.file.s3Key, storedVersion.s3Key);
       assert.equal(payload.file.originalName, storedVersion.originalName);
       assert.equal(payload.file.status, 'restored');
+      assert.equal(global.__kgkVersions.length, 2);
+      assert.ok(global.__kgkVersions.some((item) => item.s3Key === originalS3Key));
+    });
+  });
+});
+
+test('a user can cancel a pending version reservation', async () => {
+  await withServer(async (port) => {
+    const { token } = await registerUser(port, 'Alice', 'version-cancel@example.com');
+    const file = await createFile(port, token, 'main.txt', 'text/plain');
+    const versionData = await createVersion(port, token, file.file.id);
+
+    await withS3Response(async () => ({}), async () => {
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/files/${file.file.id}/versions/${versionData.version.id}/cancel`,
+        { method: 'DELETE', headers: authHeaders(token) },
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(global.__kgkVersions.length, 0);
     });
   });
 });
